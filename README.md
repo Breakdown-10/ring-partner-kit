@@ -1,0 +1,132 @@
+# ring-partner-kit
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+
+Production-grade developer toolkit for building integrations on the **Ring App Store** and **Ring Developer API**. Created as part of the **Quiet Check-In** submission for the Amazon Developer Hackathon 2026.
+
+---
+
+## Features
+
+- **Constant-Time Webhook Verification:** Timing-safe HMAC-SHA256 signature verification over raw bytes, preventing timing attacks and JSON re-serialization hash divergence. Built-in replay attack mitigation with clock drift tolerance.
+- **Pydantic v2 Models:** Strict, typed data models for the Ring Developer API v1.1 Webhook envelope (`meta`, `data`, `attributes`, `device_state`) and event types (`motion`, `ding`, `contact_sensor_faulted`, `contact_sensor_cleared`, `device_health`).
+- **Resilient API Client:** Automatic OAuth2 PKCE token lifecycle and refreshing, exponential backoff with jitter on 429 / 5xx, and rate limit header tracking (`X-RateLimit-*`).
+- **Ring Twin Simulator:** Synthesizes realistic 24-hour elder routines and customizable anomalies with Gaussian jitter. Backfills synthetic histories and emits signed HTTP webhooks to test receivers locally and in CI without physical Ring hardware.
+- **CLI Utility:** Verify signatures or emit simulated event streams straight from your terminal.
+
+---
+
+## Installation
+
+```bash
+pip install ring-partner-kit
+```
+
+Or for local development:
+```bash
+pip install -e .
+```
+
+---
+
+## Quick Start
+
+### 1. Verifying Ring Webhook Signatures
+
+In your web server (FastAPI, Flask, Lambda, etc.), always verify against raw request body bytes:
+
+```python
+from ring_partner_kit import RingWebhookVerifier
+
+verifier = RingWebhookVerifier(secret="your_ring_webhook_secret_here")
+
+# In FastAPI:
+@app.post("/webhooks/ring")
+async def handle_ring_webhook(request: Request):
+    raw_body = await request.body()
+    # Ring standard header is X-Signature (sha256=<hex> or t=...,v1=...); also accepts X-Ring-Signature
+    signature_header = request.headers.get("X-Signature") or request.headers.get("X-Ring-Signature")
+
+    if not verifier.verify(raw_body, signature_header):
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    # Safe to parse payload
+    payload = json.loads(raw_body)
+    ...
+```
+
+### 2. Parsing Webhook Payloads with Pydantic v2
+
+```python
+from ring_partner_kit import RingWebhookEnvelope, NormalizedSignal
+
+envelope = RingWebhookEnvelope.model_validate(json_dict)
+
+print(f"Event: {envelope.data.type} from device {envelope.data.device_id}")
+
+# Convert into a normalized event for downstream processing
+signal = NormalizedSignal.from_webhook(envelope, circle_id="circle-123")
+```
+
+### 3. Calling the Ring API
+
+```python
+from ring_partner_kit import RingApiClient
+
+client = RingApiClient(
+    client_id="your_client_id",
+    refresh_token="your_refresh_token",
+    access_token="initial_access_token",
+)
+
+# Lists all authorized doorbells and sensors
+devices = client.get_devices()
+
+# Check device battery and connection status
+health = client.get_device_health(device_id="ring-doorbell-01")
+```
+
+### 4. Simulating Ring Devices with Ring Twin
+
+Test your pipeline locally without physical devices:
+
+```python
+from ring_partner_kit import RingTwinSimulator
+from datetime import datetime, timezone
+
+twin = RingTwinSimulator(webhook_secret="your_test_secret")
+
+# Generate 21 days of baseline routine events
+history = twin.backfill_history(days=21)
+
+# Emit a day's worth of signed events to your local webhook endpoint
+events = twin.generate_day_routine(datetime.now(timezone.utc), skip_wake=True)
+for event in events:
+    twin.emit_webhook("http://localhost:8000/api/v1/webhooks/ring", event)
+```
+
+---
+
+## Command-Line Usage
+
+Verify a signature:
+```bash
+ring-partner-kit verify --secret "secret" --signature "t=123,v1=abc..." --body '{"event":"motion"}'
+```
+
+Emit simulated events:
+```bash
+ring-twin emit --url http://localhost:8000/api/v1/webhooks/ring --secret "secret" --anomaly wake
+```
+
+Export 14 days of synthetic history:
+```bash
+ring-twin backfill --days 14 --output synthetic_data.json
+```
+
+---
+
+## License
+
+MIT License. See [LICENSE](LICENSE) for details.

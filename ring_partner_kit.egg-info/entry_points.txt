@@ -1,0 +1,3 @@
+[console_scripts]
+ring-partner-kit = ring_partner_kit.cli:main
+ring-twin = ring_partner_kit.cli:twin_main
